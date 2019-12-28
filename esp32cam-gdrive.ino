@@ -3,8 +3,11 @@
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 #include "Base64.h"
-
+#include <HTTPClient.h>
 #include "esp_camera.h"
+#include "driver/rtc_io.h"
+#include "soc/rtc_cntl_reg.h"
+#include "soc/rtc.h"
 
 const char* ssid     = "vladiVivacom4g";   //your network SSID
 const char* password = "0888414447";   //your network password
@@ -12,6 +15,7 @@ const char* myDomain = "script.google.com";
 String myScript = "/macros/s/AKfycbyawOlBvc9I-XmiTRZZvA6ZnhROP3LRAjx1jOcrd1xw_iRB7cU/exec";    //Replace with your own url
 
 int waitingTime = 30000; //Wait 30 seconds to google response.
+String timesForImage [] = { "09:00", "11:00", "13:00", "15:00", "17:00", ""};
 
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -31,19 +35,50 @@ int waitingTime = 30000; //Wait 30 seconds to google response.
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
+#define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
+
 void setup() {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   
   Serial.begin(115200);
   delay(10);
-  
+
+  //Serial.printf("6: %d, 2: %d, 4: %d \n", digitalRead(6));
   initWifi();
+
+  //testTimeToSleep();
+  //delay(1000000L);
+  
   initCamera();
+  Serial.println(F("retrieve time from google")); 
+  uint32_t secToSleep = getSecondsToSleep(getTimeFromGoogleSec() + 2*3600);
+  if (secToSleep > 0) {
+    Serial.printf("Will sleep for %u sec, until next interval\n", secToSleep);
+    saveCapturedImage();
+    enterDeepSleep(secToSleep);
+  }
+  saveCapturedImage();
+  enterDeepSleep(120);
+}
+
+void enterDeepSleep(uint32_t secToSleep) {
+  esp_sleep_enable_timer_wakeup(secToSleep * uS_TO_S_FACTOR);
+  esp_deep_sleep_start();  
+}
+
+uint32_t getSecondsToSleep(uint32_t curTimeSec) {
+  for (int i=0; timesForImage[i].length() > 0; i++) {
+    Serial.printf("Checking %s: \n", timesForImage[i].c_str());
+    uint32_t t = timeToSec(timesForImage[i].c_str());
+    if (abs(curTimeSec - t) < 90) return 0;
+    if (curTimeSec < t) return (t - curTimeSec);
+  }
+  return (timeToSec("24:00") - curTimeSec + timeToSec(timesForImage[0].c_str()));
 }
 
 void loop() {
-  saveCapturedImage();
-  delay(60000);
+//  saveCapturedImage();
+//  delay(60000);
 }
 
 void saveCapturedImage() {
@@ -51,12 +86,12 @@ void saveCapturedImage() {
   WiFiClientSecure client;
   
   if (client.connect(myDomain, 443)) {
-    Serial.println("Connection successful");
+    Serial.println(F("Connection successful"));
     
     camera_fb_t * fb = NULL;
     fb = esp_camera_fb_get();  
     if(!fb) {
-      Serial.println("Camera capture failed");
+      Serial.println(F("Camera capture failed"));
       delay(1000);
       ESP.restart();
       return;
@@ -67,12 +102,12 @@ void saveCapturedImage() {
     int chunkSize = 999;
     char output[base64_enc_len(chunkSize) + 1];
     Serial.printf("Will convert %ld to %ld bytes\n", fb->len, encLen);
-    Serial.println("Send a captured image to Google Drive.");
+    Serial.println(F("Send a captured image to Google Drive."));
     
     client.println("POST " + myScript + " HTTP/1.1");
     client.println("Host: " + String(myDomain));
     client.println("Content-Length: " + String(encLen));
-    client.println("Content-Type: application/octet-stream");
+    client.println(F("Content-Type: application/octet-stream"));
     client.println();
     
     unsigned long start = millis();
@@ -111,7 +146,7 @@ void initWifi() {
   WiFi.mode(WIFI_STA);
 
   Serial.println("");
-  Serial.print("Connecting to ");
+  Serial.print(F("Connecting to "));
   Serial.println(ssid);
   WiFi.begin(ssid, password);  
 
@@ -121,7 +156,7 @@ void initWifi() {
   }
 
   Serial.println("");
-  Serial.println("STAIP address: ");
+  Serial.println(F("STAIP address: "));
   Serial.println(WiFi.localIP());
     
   Serial.println("");
@@ -129,6 +164,8 @@ void initWifi() {
 }
 
 void initCamera() {
+
+//  Serial.println("Initializing Camera");
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -161,3 +198,46 @@ void initCamera() {
     ESP.restart();
   }  
 }
+
+uint32_t getTimeFromGoogleSec() {
+  HTTPClient http;
+  const char *headers[1] = {"Date"};
+  http.begin(F("http://google.com/"));
+  http.collectHeaders(headers, 1);
+  int rc = http.sendRequest("HEAD");
+  if (rc < 0) return -1;
+  //String time = http.header("Date");
+  const char *d1 = http.header("Date").c_str();
+  Serial.printf("Time from Google is: %s \n", d1);
+  if (strlen(d1) < 20) return -1;
+  uint32_t tg = timeToSec(d1 + strlen(d1) - 12);
+  //Serial.printf("from 00:00 is: %ud \n", tg);
+  return tg;
+}
+
+uint32_t timeToMs(const char *d1) {
+  //converts 19:40 to ms from 00:00
+  return ( ((d1[0]-'0')*10 + d1[1]-'0')*3600 + 
+           ((d1[3]-'0')*10 + d1[4]-'0')*60   +
+           ((d1[6]-'0')*10 + d1[7]-'0') ) * 1000;
+}
+
+uint32_t timeToSec(const char *d1) {
+  //converts 19:40 to ms from 00:00
+  return timeToMs(d1)/1000;
+}
+
+//void testTimeToSleep() {
+//  //timesForImage = {"09:51", "09:56", ""};
+//  //uint32_t curTime = timeToMs("09:45");
+//  String curTime = "00:00:01";
+//  Serial.printf("CurTime %s, minToSleep: %d \n", curTime.c_str(), timeToSec(curTime.c_str()));
+//  curTime = "00:01:01";
+//  Serial.printf("CurTime %s, minToSleep: %d \n", curTime.c_str(), timeToSec(curTime.c_str()));
+////  curTime = "09:51";
+////  Serial.printf("CurTime %s, minToSleep: %d \n", curTime.c_str(), getSecondsToSleep(timeToMs(curTime.c_str()))/60);
+////  curTime = "09:52";
+////  Serial.printf("CurTime %s, minToSleep: %d \n", curTime.c_str(), getSecondsToSleep(timeToMs(curTime.c_str()))/60);
+////  curTime = "09:59";
+////  Serial.printf("CurTime %s, minToSleep: %d \n", curTime.c_str(), getSecondsToSleep(timeToMs(curTime.c_str()))/60);
+//}
