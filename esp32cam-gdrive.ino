@@ -37,6 +37,7 @@ String timesForImage [] = { "09:00", "11:00", "13:00", "15:00", "17:00", ""};
 
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
 
+
 void setup() {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   
@@ -50,10 +51,20 @@ void setup() {
   //delay(1000000L);
   
   initCamera();
-  Serial.println(F("retrieve time from google")); 
+  Serial.println("retrieve time from google"); 
+  for (int i=0; i < 100; i++) {
+    uint32_t tt = getTimeFromGoogleSec();
+    Serial.printf("%d : %u \n", i, tt);
+    if (tt > 0) break;
+  }
+  uint32_t curTime = getTimeFromGoogleSec();
+  if (curTime == 0) {
+    Serial.println("Failed to retrieve time from google. Restarting in 5 sec...");
+    delay(5000);
+    ESP.restart();
+  }
   uint32_t secToSleep = getSecondsToSleep(getTimeFromGoogleSec() + 2*3600);
   if (secToSleep > 0) {
-    Serial.printf("Will sleep for %u sec, until next interval\n", secToSleep);
     saveCapturedImage();
     enterDeepSleep(secToSleep);
   }
@@ -62,6 +73,8 @@ void setup() {
 }
 
 void enterDeepSleep(uint32_t secToSleep) {
+  secToSleep = min ((uint32_t)15*60, secToSleep);
+  Serial.printf("Will sleep for %u sec, until next interval\n", secToSleep); 
   esp_sleep_enable_timer_wakeup(secToSleep * uS_TO_S_FACTOR);
   esp_deep_sleep_start();  
 }
@@ -102,12 +115,12 @@ void saveCapturedImage() {
     int chunkSize = 999;
     char output[base64_enc_len(chunkSize) + 1];
     Serial.printf("Will convert %ld to %ld bytes\n", fb->len, encLen);
-    Serial.println(F("Send a captured image to Google Drive."));
+    Serial.println("Send a captured image to Google Drive.");
     
     client.println("POST " + myScript + " HTTP/1.1");
     client.println("Host: " + String(myDomain));
     client.println("Content-Length: " + String(encLen));
-    client.println(F("Content-Type: application/octet-stream"));
+    client.println("Content-Type: application/octet-stream");
     client.println();
     
     unsigned long start = millis();
@@ -146,7 +159,7 @@ void initWifi() {
   WiFi.mode(WIFI_STA);
 
   Serial.println("");
-  Serial.print(F("Connecting to "));
+  Serial.print("Connecting to ");
   Serial.println(ssid);
   WiFi.begin(ssid, password);  
 
@@ -156,7 +169,7 @@ void initWifi() {
   }
 
   Serial.println("");
-  Serial.println(F("STAIP address: "));
+  Serial.println("STAIP address: ");
   Serial.println(WiFi.localIP());
     
   Serial.println("");
@@ -202,10 +215,10 @@ void initCamera() {
 uint32_t getTimeFromGoogleSec() {
   HTTPClient http;
   const char *headers[1] = {"Date"};
-  http.begin(F("http://google.com/"));
+  http.begin("http://google.com/");
   http.collectHeaders(headers, 1);
   int rc = http.sendRequest("HEAD");
-  if (rc < 0) return -1;
+  if (rc < 0) return 0;
   //String time = http.header("Date");
   const char *d1 = http.header("Date").c_str();
   Serial.printf("Time from Google is: %s \n", d1);
